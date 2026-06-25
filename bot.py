@@ -39,7 +39,9 @@ if not BOT_TOKEN or not SUPABASE_URL or not SUPABASE_KEY:
     sys.exit("Error: Missing required environment variables.")
 
 try:
-    ADMIN_ID: int = int(ADMIN_ID_RAW)
+    # Bo'shliqlarni olib tashlab, aniq Integer turiga o'tkazamiz
+    ADMIN_ID: int = int(ADMIN_ID_RAW.strip())
+    logger.info(f"Admin muvaffaqiyatli yuklandi ID: {ADMIN_ID}")
 except ValueError:
     ADMIN_ID = 1973341892
     logger.warning(f"ADMIN_ID xato formatda, standart qiymat yuklandi: {ADMIN_ID}")
@@ -90,7 +92,6 @@ def save_to_json_local(data: Dict[str, Any]) -> None:
                 except json.JSONDecodeError:
                     all_records = []
         
-        # Agar ariza ID'si allaqachon bo'lsa yangilaydi, aks holda qo'shadi
         existing_idx = next((i for i, item in enumerate(all_records) if item.get("application_id") == data.get("application_id")), None)
         if existing_idx is not None:
             all_records[existing_idx] = data
@@ -118,21 +119,20 @@ async def sync_supabase_select_by_user(user_id: int) -> Any:
 
 async def save_application_db(data: Dict[str, Any]) -> bool:
     """Supabase-ga xavfsiz parallel oqimda yozish va JSON zaxiralash."""
-    save_to_json_local(data) # Har doim birinchi JSON-ga yoziladi
+    save_to_json_local(data)
     loop = asyncio.get_event_loop()
     try:
         await loop.run_in_executor(None, lambda: asyncio.run(sync_supabase_insert(data)))
         logger.info(f"Supabase-ga muvaffaqiyatli saqlandi: ID {data['application_id']}")
         return True
     except Exception as e:
-        logger.error(f"Supabase-ga insert qilishda xatolik yuz berdi (Bot ishlashda davom etadi): {e}")
+        logger.error(f"Supabase-ga insert qilishda xatolik yuz berdi: {e}")
         return False
 
 async def update_application_db(app_id: int, updates: Dict[str, Any]) -> bool:
     """Supabase va JSON fayldagi arizani parallel yangilash."""
     loop = asyncio.get_event_loop()
     try:
-        # JSON yangilash mantiqi
         if os.path.exists(JSON_FILE_PATH):
             with open(JSON_FILE_PATH, "r", encoding="utf-8") as f:
                 records = json.load(f)
@@ -142,7 +142,6 @@ async def update_application_db(app_id: int, updates: Dict[str, Any]) -> bool:
             with open(JSON_FILE_PATH, "w", encoding="utf-8") as f:
                 json.dump(records, f, ensure_ascii=False, indent=4)
         
-        # Supabase yangilash
         await loop.run_in_executor(None, lambda: asyncio.run(sync_supabase_update(app_id, updates)))
         return True
     except Exception as e:
@@ -159,7 +158,6 @@ async def get_application_from_db(app_id: int) -> Optional[Dict[str, Any]]:
     except Exception as e:
         logger.warning(f"Supabase-dan o'qishda xatolik, JSON-dan qidirilmoqda: {e}")
     
-    # JSON-dan qidirish fallback
     if os.path.exists(JSON_FILE_PATH):
         try:
             with open(JSON_FILE_PATH, "r", encoding="utf-8") as f:
@@ -174,15 +172,13 @@ async def get_application_from_db(app_id: int) -> Optional[Dict[str, Any]]:
 async def generate_unique_id() -> int:
     """Takrorlanmaydigan 4 xonali unikal ID generatsiya qilish."""
     loop = asyncio.get_event_loop()
-    for _ in range(50): # Cheksiz siklga tushib qolmaslik uchun cheklangan urinish
+    for _ in range(50):
         candidate = random.randint(1000, 9999)
-        # Baza tekshiruvi
         try:
             res = await loop.run_in_executor(None, lambda: asyncio.run(sync_supabase_select_by_id(candidate)))
             if not res.data:
                 return candidate
         except Exception:
-            # Agar baza ishlamasa mahalliy JSON tekshiriladi
             if os.path.exists(JSON_FILE_PATH):
                 with open(JSON_FILE_PATH, "r", encoding="utf-8") as f:
                     records = json.load(f)
@@ -201,10 +197,8 @@ def get_mfy_keyboard(page: int = 0) -> InlineKeyboardMarkup:
     
     buttons = []
     for mfy in sliced_mfy:
-        # callback_value emas, callback_data bo'lishi shart!
         buttons.append([InlineKeyboardButton(text=mfy, callback_data=f"mfy_sel:{mfy}")])
         
-    # Navigatsiya tugmalari Row
     nav_row = []
     if page > 0:
         nav_row.append(InlineKeyboardButton(text="⬅️ Oldingi", callback_data=f"mfy_page:{page-1}"))
@@ -216,9 +210,15 @@ def get_mfy_keyboard(page: int = 0) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def get_category_keyboard() -> InlineKeyboardMarkup:
-    # Bu yerda ham callback_data qilib to'g'rilandi
     buttons = [[InlineKeyboardButton(text=cat, callback_data=f"cat_sel:{cat}")] for cat in CATEGORIES]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def get_admin_action_keyboard(app_id: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Qabul qilish", callback_data=f"adm_accept:{app_id}")],
+        [InlineKeyboardButton(text="❌ Rad etish", callback_data=f"adm_reject:{app_id}")],
+        [InlineKeyboardButton(text="🏁 Tugatish (Hal etildi)", callback_data=f"adm_resolve:{app_id}")]
+    ])
 
 # 6. FSM STATES DEFINITION
 class MurojaatJarayoni(StatesGroup):
@@ -367,8 +367,9 @@ async def process_final_text_and_save(message: Message, state: FSMContext):
             reply_markup=get_admin_action_keyboard(app_id),
             parse_mode="Markdown"
         )
+        logger.info(f"Yangi ariza adminga uzatildi. ID: {app_id}")
     except (TelegramForbiddenError, TelegramAPIError) as e:
-        logger.error(f"Adminga bildirishnoma yuborishda xatolik: {e}")
+        logger.error(f"Adminga bildirishnoma yuborishda xatolik (ADMIN_ID xato yoki botni blocklagan): {e}")
 
 # 8. STATUS CHECKING FOR USERS
 @router.message(Command("holat"))
@@ -380,7 +381,6 @@ async def check_status(message: Message):
         res = await loop.run_in_executor(None, lambda: asyncio.run(sync_supabase_select_by_user(user_id)))
         records = res.data if res and hasattr(res, 'data') else []
     except Exception:
-        # Local fallback
         records = []
         if os.path.exists(JSON_FILE_PATH):
             with open(JSON_FILE_PATH, "r", encoding="utf-8") as f:
@@ -401,10 +401,14 @@ async def check_status(message: Message):
         )
     await message.answer(response, parse_mode="Markdown")
 
-# 9. ADMIN PANEL ACTIONS & TEXT INTERCEPTION
-@router.message(F.chat.id == ADMIN_ID, F.text.regexp(r'^\d{4}$'))
+# 9. ADMIN PANEL ACTIONS & MANAGEMENT (TO'LIQ TUZATILGAN QISM)
+@router.message(F.text.regexp(r'^\d{4}$'))
 async def admin_lookup_by_id(message: Message):
-    """Admin shunchaki 4 xonali ID yuborganida uni bazadan qidirish."""
+    """Admin shunchaki 4 xonali ID yuborganida uni aniq tekshirib bazadan qidirish."""
+    if message.from_user.id != ADMIN_ID:
+        # Agar yozgan shaxs admin bo'lmasa, uni oddiy xabar sifatida o'tkazib yuboradi (FSM holatiga ta'sir qilmaydi)
+        return
+
     app_id = int(message.text.strip())
     app = await get_application_from_db(app_id)
     
@@ -427,13 +431,16 @@ async def admin_lookup_by_id(message: Message):
 
 @router.callback_query(F.data.startswith("adm_accept:"))
 async def admin_accept_callback(callback: CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Siz admin emassiz!", show_alert=True)
+        return
+
     app_id = int(callback.data.split(":")[1])
     app = await get_application_from_db(app_id)
     if app:
         await update_application_db(app_id, {"status": "Qabul qilindi"})
         await callback.message.edit_text(callback.message.text + "\n\n🟢 **Holat: Qabul qilindi deb o'zgartirildi**", parse_mode="Markdown")
         
-        # Notify User safely
         try:
             await bot.send_message(
                 chat_id=app["user_id"],
@@ -441,18 +448,21 @@ async def admin_accept_callback(callback: CallbackQuery):
                 parse_mode="Markdown"
             )
         except Exception as e:
-            logger.warning(f"Foydalanuvchiga xabar yuborib bo'lmadi (Bot blocklangan bo'lishi mumkin): {e}")
+            logger.warning(f"Foydalanuvchiga xabar yuborib bo'lmadi: {e}")
     await callback.answer()
 
 @router.callback_query(F.data.startswith("adm_resolve:"))
 async def admin_resolve_callback(callback: CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Siz admin emassiz!", show_alert=True)
+        return
+
     app_id = int(callback.data.split(":")[1])
     app = await get_application_from_db(app_id)
     if app:
         await update_application_db(app_id, {"status": "Hal etildi"})
         await callback.message.edit_text(callback.message.text + "\n\n🏁 **Holat: Hal etildi deb belgilandi**", parse_mode="Markdown")
         
-        # Notify User safely
         try:
             await bot.send_message(
                 chat_id=app["user_id"],
@@ -465,14 +475,21 @@ async def admin_resolve_callback(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("adm_reject:"))
 async def admin_reject_callback(callback: CallbackQuery, state: FSMContext):
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("Siz admin emassiz!", show_alert=True)
+        return
+
     app_id = int(callback.data.split(":")[1])
     await state.update_data(reject_app_id=app_id)
     await bot.send_message(chat_id=ADMIN_ID, text=f"Iltimos, ID {app_id} arizasini rad etish sababini batafsil yozing:")
     await state.set_state(AdminJarayoni.RadSababi)
     await callback.answer()
 
-@router.message(AdminJarayoni.RadSababi, F.chat.id == ADMIN_ID)
+@router.message(AdminJarayoni.RadSababi)
 async def process_rejection_reason_text(message: Message, state: FSMContext):
+    if message.from_user.id != ADMIN_ID:
+        return
+
     reason = message.text.strip()
     adm_data = await state.get_data()
     app_id = adm_data["reject_app_id"]
@@ -481,9 +498,8 @@ async def process_rejection_reason_text(message: Message, state: FSMContext):
     app = await get_application_from_db(app_id)
     if app:
         await update_application_db(app_id, {"status": "Rad etildi", "rejection_reason": reason})
-        await message.answer(f"❌ ID {app_id} bo'yicha ariza rad etildi va sababi yuborildi.")
+        await message.answer(f"❌ ID {app_id} bo'yicha ariza rad etildi va sababi foydalanuvchiga yuborildi.")
         
-        # Notify User safely
         try:
             await bot.send_message(
                 chat_id=app["user_id"],
@@ -497,8 +513,7 @@ async def process_rejection_reason_text(message: Message, state: FSMContext):
 
 # 10. MAIN POLLING FUNCTION WITH ERROR RESILIENCE
 async def main():
-    logger.info("Bot ishga tushmoqda...")
-    # Har qanday webhook tozalab yuboriladi
+    logger.info("Bot yangilangan mantiq bilan ishga tushmoqda...")
     await bot.delete_webhook(drop_pending_updates=True)
     try:
         await dp.start_polling(bot)
