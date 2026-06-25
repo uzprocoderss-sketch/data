@@ -38,8 +38,11 @@ if not BOT_TOKEN or not SUPABASE_URL or not SUPABASE_KEY:
     logger.critical("Muhit o'zgaruvchilari (Environment Variables) to'liq emas! Bot to'xtatiladi.")
     sys.exit("Error: Missing required environment variables.")
 
+# Supabase URL formatini to'g'rilash (Agar noto'g'ri kiritilgan bo'lsa)
+if "/rest/v1" in SUPABASE_URL:
+    SUPABASE_URL = SUPABASE_URL.split("/rest/v1")[0]
+
 try:
-    # Bo'shliqlarni olib tashlab, aniq Integer turiga o'tkazamiz
     ADMIN_ID: int = int(ADMIN_ID_RAW.strip())
     logger.info(f"Admin muvaffaqiyatli yuklandi ID: {ADMIN_ID}")
 except ValueError:
@@ -55,7 +58,7 @@ dp.include_router(router)
 supabase_client: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 JSON_FILE_PATH = "murojaatlar.json"
 
-# MFY Ro'yxati
+# Global Ma'lumotlar Ro'yxati
 MFY_LIST: List[str] = [
     "Boyovut", "Terakzor", "Oltin Vodiy", "Furqat", "Sharq Haqiqati", "Sohilobod",
     "Ibrat", "Dostlik", "Ahillik", "A.Yassaviy", "Beshbuloq", "Inoqlik",
@@ -63,132 +66,12 @@ MFY_LIST: List[str] = [
     "Yulduz", "Mevazor", "Soyibobod", "Mustaqillik", "Tajribakor", "H.Olimjon"
 ]
 
-# Murojaat Toifalari
 CATEGORIES: List[str] = [
     "Moddiy yordam", "Nogironlik va TIEK", "Reabilitatsiya",
     "Sanatoriy", "Vasiylik", "Sayyor xizmatlar"
 ]
 
-# 4. UTILITY FUNCTIONS (Markdown Escape & DB Operations)
-def escape_markdown(text: Any) -> str:
-    """Markdown v2 yoki standard Markdown uchun maxsus belgilarni escape qiladi."""
-    if not text:
-        return ""
-    text_str = str(text)
-    for char in ['*', '_', '`']:
-        text_str = text_str.replace(char, f"\\{char}")
-    return text_str
-
-def save_to_json_local(data: Dict[str, Any]) -> None:
-    """Ma'lumotlarni parallel ravishda mahalliy JSON faylga zaxiralaydi."""
-    try:
-        all_records = []
-        if os.path.exists(JSON_FILE_PATH):
-            with open(JSON_FILE_PATH, "r", encoding="utf-8") as f:
-                try:
-                    all_records = json.load(f)
-                    if not isinstance(all_records, list):
-                        all_records = []
-                except json.JSONDecodeError:
-                    all_records = []
-        
-        existing_idx = next((i for i, item in enumerate(all_records) if item.get("application_id") == data.get("application_id")), None)
-        if existing_idx is not None:
-            all_records[existing_idx] = data
-        else:
-            all_records.append(data)
-            
-        with open(JSON_FILE_PATH, "w", encoding="utf-8") as f:
-            json.dump(all_records, f, ensure_ascii=False, indent=4)
-        logger.info(f"Mahalliy zaxira yangilandi: ID {data.get('application_id')}")
-    except Exception as e:
-        logger.error(f"JSON faylga yozishda xatolik: {e}")
-
-# ASYNC EXECUTOR FOR DB WRITING
-async def sync_supabase_insert(data: Dict[str, Any]) -> Any:
-    return supabase_client.table("murojaatlar").insert(data).execute()
-
-async def sync_supabase_update(app_id: int, updates: Dict[str, Any]) -> Any:
-    return supabase_client.table("murojaatlar").update(updates).eq("application_id", app_id).execute()
-
-async def sync_supabase_select_by_id(app_id: int) -> Any:
-    return supabase_client.table("murojaatlar").select("*").eq("application_id", app_id).execute()
-
-async def sync_supabase_select_by_user(user_id: int) -> Any:
-    return supabase_client.table("murojaatlar").select("*").eq("user_id", user_id).execute()
-
-async def save_application_db(data: Dict[str, Any]) -> bool:
-    """Supabase-ga xavfsiz parallel oqimda yozish va JSON zaxiralash."""
-    save_to_json_local(data)
-    loop = asyncio.get_event_loop()
-    try:
-        await loop.run_in_executor(None, lambda: asyncio.run(sync_supabase_insert(data)))
-        logger.info(f"Supabase-ga muvaffaqiyatli saqlandi: ID {data['application_id']}")
-        return True
-    except Exception as e:
-        logger.error(f"Supabase-ga insert qilishda xatolik yuz berdi: {e}")
-        return False
-
-async def update_application_db(app_id: int, updates: Dict[str, Any]) -> bool:
-    """Supabase va JSON fayldagi arizani parallel yangilash."""
-    loop = asyncio.get_event_loop()
-    try:
-        if os.path.exists(JSON_FILE_PATH):
-            with open(JSON_FILE_PATH, "r", encoding="utf-8") as f:
-                records = json.load(f)
-            for item in records:
-                if item.get("application_id") == app_id:
-                    item.update(updates)
-            with open(JSON_FILE_PATH, "w", encoding="utf-8") as f:
-                json.dump(records, f, ensure_ascii=False, indent=4)
-        
-        await loop.run_in_executor(None, lambda: asyncio.run(sync_supabase_update(app_id, updates)))
-        return True
-    except Exception as e:
-        logger.error(f"Ma'lumotni yangilashda xatolik: {e}")
-        return False
-
-async def get_application_from_db(app_id: int) -> Optional[Dict[str, Any]]:
-    """Avval Supabase-dan, uzilish bo'lsa JSON fayldan qidirish."""
-    loop = asyncio.get_event_loop()
-    try:
-        res = await loop.run_in_executor(None, lambda: asyncio.run(sync_supabase_select_by_id(app_id)))
-        if res and hasattr(res, 'data') and len(res.data) > 0:
-            return res.data[0]
-    except Exception as e:
-        logger.warning(f"Supabase-dan o'qishda xatolik, JSON-dan qidirilmoqda: {e}")
-    
-    if os.path.exists(JSON_FILE_PATH):
-        try:
-            with open(JSON_FILE_PATH, "r", encoding="utf-8") as f:
-                records = json.load(f)
-                for item in records:
-                    if item.get("application_id") == app_id:
-                        return item
-        except Exception as json_err:
-            logger.error(f"JSON-dan o'qishda xatolik: {json_err}")
-    return None
-
-async def generate_unique_id() -> int:
-    """Takrorlanmaydigan 4 xonali unikal ID generatsiya qilish."""
-    loop = asyncio.get_event_loop()
-    for _ in range(50):
-        candidate = random.randint(1000, 9999)
-        try:
-            res = await loop.run_in_executor(None, lambda: asyncio.run(sync_supabase_select_by_id(candidate)))
-            if not res.data:
-                return candidate
-        except Exception:
-            if os.path.exists(JSON_FILE_PATH):
-                with open(JSON_FILE_PATH, "r", encoding="utf-8") as f:
-                    records = json.load(f)
-                if not any(i.get("application_id") == candidate for i in records):
-                    return candidate
-            else:
-                return candidate
-    return random.randint(1000, 9999)
-
-# 5. KEYBOARDS & NAVIGATION
+# 4. KEYBOARDS & NAVIGATION (NameError bo'lmasligi uchun tepaga ko'chirildi)
 def get_mfy_keyboard(page: int = 0) -> InlineKeyboardMarkup:
     items_per_page = 6
     start_idx = page * items_per_page
@@ -219,6 +102,119 @@ def get_admin_action_keyboard(app_id: int) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="❌ Rad etish", callback_data=f"adm_reject:{app_id}")],
         [InlineKeyboardButton(text="🏁 Tugatish (Hal etildi)", callback_data=f"adm_resolve:{app_id}")]
     ])
+
+# 5. UTILITY FUNCTIONS (Markdown Escape & DB Operations)
+def escape_markdown(text: Any) -> str:
+    if not text:
+        return ""
+    text_str = str(text)
+    for char in ['*', '_', '`']:
+        text_str = text_str.replace(char, f"\\{char}")
+    return text_str
+
+def save_to_json_local(data: Dict[str, Any]) -> None:
+    try:
+        all_records = []
+        if os.path.exists(JSON_FILE_PATH):
+            with open(JSON_FILE_PATH, "r", encoding="utf-8") as f:
+                try:
+                    all_records = json.load(f)
+                    if not isinstance(all_records, list):
+                        all_records = []
+                except json.JSONDecodeError:
+                    all_records = []
+        
+        existing_idx = next((i for i, item in enumerate(all_records) if item.get("application_id") == data.get("application_id")), None)
+        if existing_idx is not None:
+            all_records[existing_idx] = data
+        else:
+            all_records.append(data)
+            
+        with open(JSON_FILE_PATH, "w", encoding="utf-8") as f:
+            json.dump(all_records, f, ensure_ascii=False, indent=4)
+        logger.info(f"Mahalliy zaxira yangilandi: ID {data.get('application_id')}")
+    except Exception as e:
+        logger.error(f"JSON faylga yozishda xatolik: {e}")
+
+# ASYNC EXECUTORS FOR HYBRID BACKUP
+async def sync_supabase_insert(data: Dict[str, Any]) -> Any:
+    return supabase_client.table("murojaatlar").insert(data).execute()
+
+async def sync_supabase_update(app_id: int, updates: Dict[str, Any]) -> Any:
+    return supabase_client.table("murojaatlar").update(updates).eq("application_id", app_id).execute()
+
+async def sync_supabase_select_by_id(app_id: int) -> Any:
+    return supabase_client.table("murojaatlar").select("*").eq("application_id", app_id).execute()
+
+async def sync_supabase_select_by_user(user_id: int) -> Any:
+    return supabase_client.table("murojaatlar").select("*").eq("user_id", user_id).execute()
+
+async def save_application_db(data: Dict[str, Any]) -> bool:
+    save_to_json_local(data)
+    loop = asyncio.get_event_loop()
+    try:
+        await loop.run_in_executor(None, lambda: asyncio.run(sync_supabase_insert(data)))
+        logger.info(f"Supabase-ga muvaffaqiyatli saqlandi: ID {data['application_id']}")
+        return True
+    except Exception as e:
+        logger.error(f"Supabase-ga insert qilishda xatolik yuz berdi (Bot ishlashda davom etadi): {e}")
+        return False
+
+async def update_application_db(app_id: int, updates: Dict[str, Any]) -> bool:
+    loop = asyncio.get_event_loop()
+    try:
+        if os.path.exists(JSON_FILE_PATH):
+            with open(JSON_FILE_PATH, "r", encoding="utf-8") as f:
+                records = json.load(f)
+            for item in records:
+                if item.get("application_id") == app_id:
+                    item.update(updates)
+            with open(JSON_FILE_PATH, "w", encoding="utf-8") as f:
+                json.dump(records, f, ensure_ascii=False, indent=4)
+        
+        await loop.run_in_executor(None, lambda: asyncio.run(sync_supabase_update(app_id, updates)))
+        return True
+    except Exception as e:
+        logger.error(f"Ma'lumotni yangilashda xatolik: {e}")
+        return False
+
+async def get_application_from_db(app_id: int) -> Optional[Dict[str, Any]]:
+    loop = asyncio.get_event_loop()
+    try:
+        res = await loop.run_in_executor(None, lambda: asyncio.run(sync_supabase_select_by_id(app_id)))
+        if res and hasattr(res, 'data') and len(res.data) > 0:
+            return res.data[0]
+    except Exception as e:
+        logger.warning(f"Supabase-dan o'qishda xatolik, JSON-dan qidirilmoqda: {e}")
+    
+    if os.path.exists(JSON_FILE_PATH):
+        try:
+            with open(JSON_FILE_PATH, "r", encoding="utf-8") as f:
+                records = json.load(f)
+                for item in records:
+                    if item.get("application_id") == app_id:
+                        return item
+        except Exception as json_err:
+            logger.error(f"JSON-dan o'qishda xatolik: {json_err}")
+    return None
+
+async def generate_unique_id() -> int:
+    loop = asyncio.get_event_loop()
+    for _ in range(50):
+        candidate = random.randint(1000, 9999)
+        try:
+            res = await loop.run_in_executor(None, lambda: asyncio.run(sync_supabase_select_by_id(candidate)))
+            if not res.data:
+                return candidate
+        except Exception:
+            if os.path.exists(JSON_FILE_PATH):
+                with open(JSON_FILE_PATH, "r", encoding="utf-8") as f:
+                    records = json.load(f)
+                if not any(i.get("application_id") == candidate for i in records):
+                    return candidate
+            else:
+                return candidate
+    return random.randint(1000, 9999)
 
 # 6. FSM STATES DEFINITION
 class MurojaatJarayoni(StatesGroup):
@@ -338,10 +334,9 @@ async def process_final_text_and_save(message: Message, state: FSMContext):
         "created_at": current_time
     }
     
-    # Save Parallelly
+    # Save (Supabase va JSON parallel ishlaydi, xatolikda o'chmaydi)
     await save_application_db(payload)
     
-    # User Notification
     success_text = (
         f"✅ Murojaatingiz muvaffaqiyatli qabul qilindi!\n\n"
         f"🆔 Murojaat ID raqami: **{app_id}**\n"
@@ -350,7 +345,6 @@ async def process_final_text_and_save(message: Message, state: FSMContext):
     )
     await message.answer(success_text, parse_mode="Markdown")
     
-    # Admin Alert
     admin_alert = (
         f"📩 **YANGI MUROJAAT KELDI (ID: {app_id})**\n\n"
         f"👤 Kimdan: {escape_markdown(payload['fish'])}\n"
@@ -368,8 +362,8 @@ async def process_final_text_and_save(message: Message, state: FSMContext):
             parse_mode="Markdown"
         )
         logger.info(f"Yangi ariza adminga uzatildi. ID: {app_id}")
-    except (TelegramForbiddenError, TelegramAPIError) as e:
-        logger.error(f"Adminga bildirishnoma yuborishda xatolik (ADMIN_ID xato yoki botni blocklagan): {e}")
+    except Exception as e:
+        logger.error(f"Adminga bildirishnoma ketmadi: {e}")
 
 # 8. STATUS CHECKING FOR USERS
 @router.message(Command("holat"))
@@ -401,12 +395,10 @@ async def check_status(message: Message):
         )
     await message.answer(response, parse_mode="Markdown")
 
-# 9. ADMIN PANEL ACTIONS & MANAGEMENT (TO'LIQ TUZATILGAN QISM)
+# 9. ADMIN PANEL ACTIONS & MANAGEMENT
 @router.message(F.text.regexp(r'^\d{4}$'))
 async def admin_lookup_by_id(message: Message):
-    """Admin shunchaki 4 xonali ID yuborganida uni aniq tekshirib bazadan qidirish."""
     if message.from_user.id != ADMIN_ID:
-        # Agar yozgan shaxs admin bo'lmasa, uni oddiy xabar sifatida o'tkazib yuboradi (FSM holatiga ta'sir qilmaydi)
         return
 
     app_id = int(message.text.strip())
@@ -511,9 +503,9 @@ async def process_rejection_reason_text(message: Message, state: FSMContext):
     else:
         await message.answer("Xatolik: Arizani bazadan topib bo'lmadi.")
 
-# 10. MAIN POLLING FUNCTION WITH ERROR RESILIENCE
+# 10. MAIN POLLING FUNCTION
 async def main():
-    logger.info("Bot yangilangan mantiq bilan ishga tushmoqda...")
+    logger.info("Bot qayta tartiblangan xavfsiz mantiq bilan ishga tushmoqda...")
     await bot.delete_webhook(drop_pending_updates=True)
     try:
         await dp.start_polling(bot)
