@@ -201,29 +201,24 @@ def get_mfy_keyboard(page: int = 0) -> InlineKeyboardMarkup:
     
     buttons = []
     for mfy in sliced_mfy:
-        buttons.append([InlineKeyboardButton(text=mfy, callback_value=f"mfy_sel:{mfy}")])
+        # callback_value emas, callback_data bo'lishi shart!
+        buttons.append([InlineKeyboardButton(text=mfy, callback_data=f"mfy_sel:{mfy}")])
         
     # Navigatsiya tugmalari Row
     nav_row = []
     if page > 0:
-        nav_row.append(InlineKeyboardButton(text="⬅️ Oldingi", callback_value=f"mfy_page:{page-1}"))
+        nav_row.append(InlineKeyboardButton(text="⬅️ Oldingi", callback_data=f"mfy_page:{page-1}"))
     if end_idx < len(MFY_LIST):
-        nav_row.append(InlineKeyboardButton(text="Keyingi ➡️", callback_value=f"mfy_page:{page+1}"))
+        nav_row.append(InlineKeyboardButton(text="Keyingi ➡️", callback_data=f"mfy_page:{page+1}"))
         
     if nav_row:
         buttons.append(nav_row)
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def get_category_keyboard() -> InlineKeyboardMarkup:
-    buttons = [[InlineKeyboardButton(text=cat, callback_value=f"cat_sel:{cat}")] for cat in CATEGORIES]
+    # Bu yerda ham callback_data qilib to'g'rilandi
+    buttons = [[InlineKeyboardButton(text=cat, callback_data=f"cat_sel:{cat}")] for cat in CATEGORIES]
     return InlineKeyboardMarkup(inline_keyboard=buttons)
-
-def get_admin_action_keyboard(app_id: int) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Qabul qilish", callback_value=f"adm_accept:{app_id}")],
-        [InlineKeyboardButton(text="❌ Rad etish", callback_value=f"adm_reject:{app_id}")],
-        [InlineKeyboardButton(text="🏁 Tugatish (Hal etildi)", callback_value=f"adm_resolve:{app_id}")]
-    ])
 
 # 6. FSM STATES DEFINITION
 class MurojaatJarayoni(StatesGroup):
