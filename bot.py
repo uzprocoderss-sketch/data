@@ -71,7 +71,7 @@ CATEGORIES: List[str] = [
     "Sanatoriy", "Vasiylik", "Sayyor xizmatlar"
 ]
 
-# 4. KEYBOARDS & NAVIGATION (NameError bo'lmasligi uchun tepaga ko'chirildi)
+# 4. KEYBOARDS & NAVIGATION
 def get_mfy_keyboard(page: int = 0) -> InlineKeyboardMarkup:
     items_per_page = 6
     start_idx = page * items_per_page
@@ -395,17 +395,30 @@ async def check_status(message: Message):
         )
     await message.answer(response, parse_mode="Markdown")
 
-# 9. ADMIN PANEL ACTIONS & MANAGEMENT
-@router.message(F.text.regexp(r'^\d{4}$'))
-async def admin_lookup_by_id(message: Message):
+# 9. ADMIN PANEL ACTIONS & MANAGEMENT (TUZATILGAN QISM)
+@router.message(F.text.regexp(r'^\d+$'))
+async def admin_lookup_by_id(message: Message, state: FSMContext):
+    # Faqat admin uchun ruxsat
     if message.from_user.id != ADMIN_ID:
         return
 
-    app_id = int(message.text.strip())
+    # Har qanday raqamli IDni (uzunligidan qat'iy nazar) tozalab olish
+    app_id_raw = message.text.strip()
+    try:
+        app_id = int(app_id_raw)
+    except ValueError:
+        return
+
+    # Agar admin adashib Rad qilish rejimida bo'lsa va sabab o'rniga shunchaki raqam yozmagan bo'lsa
+    current_state = await state.get_state()
+    if current_state == AdminJarayoni.RadSababi:
+        # Agar bu holatda raqam kelgandayam uni qidirmoqchi bo'lsangiz state-ni tozalaymiz
+        await state.clear()
+
     app = await get_application_from_db(app_id)
     
     if not app:
-        await message.answer(f"❌ ID {app_id} bilan hech qanday ariza topilmadi.")
+        await message.answer(f"❌ ID `{app_id}` bilan hech qanday ariza topilmadi.", parse_mode="Markdown")
         return
         
     reason_str = f"\n❌ Rad etish sababi: {escape_markdown(app.get('rejection_reason'))}" if app.get('rejection_reason') else ""
@@ -419,6 +432,8 @@ async def admin_lookup_by_id(message: Message):
         f"📊 Holati: **{escape_markdown(app['status'])}**{reason_str}\n\n"
         f"📝 Matn: {escape_markdown(app['text_content'])}"
     )
+    
+    # Maxsus status boshqaruv paneli (Dashboard)ni inline klaviatura bilan chiqarish
     await message.answer(info, reply_markup=get_admin_action_keyboard(app_id), parse_mode="Markdown")
 
 @router.callback_query(F.data.startswith("adm_accept:"))
@@ -431,7 +446,10 @@ async def admin_accept_callback(callback: CallbackQuery):
     app = await get_application_from_db(app_id)
     if app:
         await update_application_db(app_id, {"status": "Qabul qilindi"})
-        await callback.message.edit_text(callback.message.text + "\n\n🟢 **Holat: Qabul qilindi deb o'zgartirildi**", parse_mode="Markdown")
+        
+        # Dashboard status matnini yangilash
+        updated_text = callback.message.text + "\n\n🟢 **Holat: Qabul qilindi deb o'zgartirildi**"
+        await callback.message.edit_text(updated_text, reply_markup=get_admin_action_keyboard(app_id), parse_mode="Markdown")
         
         try:
             await bot.send_message(
@@ -453,7 +471,10 @@ async def admin_resolve_callback(callback: CallbackQuery):
     app = await get_application_from_db(app_id)
     if app:
         await update_application_db(app_id, {"status": "Hal etildi"})
-        await callback.message.edit_text(callback.message.text + "\n\n🏁 **Holat: Hal etildi deb belgilandi**", parse_mode="Markdown")
+        
+        # Dashboard status matnini yangilash
+        updated_text = callback.message.text + "\n\n🏁 **Holat: Hal etildi deb belgilandi**"
+        await callback.message.edit_text(updated_text, reply_markup=get_admin_action_keyboard(app_id), parse_mode="Markdown")
         
         try:
             await bot.send_message(
@@ -484,9 +505,14 @@ async def process_rejection_reason_text(message: Message, state: FSMContext):
 
     reason = message.text.strip()
     adm_data = await state.get_data()
-    app_id = adm_data["reject_app_id"]
-    await state.clear()
+    app_id = adm_data.get("reject_app_id")
     
+    if not app_id:
+        await message.answer("Xatolik: Arizaga bog'liq ID topilmadi. Qaytadan urinib ko'ring.")
+        await state.clear()
+        return
+        
+    await state.clear()
     app = await get_application_from_db(app_id)
     if app:
         await update_application_db(app_id, {"status": "Rad etildi", "rejection_reason": reason})
